@@ -1,6 +1,6 @@
 # pi-usage
 
-[![pi-usage — for PI Agent](https://raw.githubusercontent.com/prjct-app/pi-local-extensions/main/pi-usage/docs/cover-v2.png)](https://pi.dev)
+[![pi-usage — for PI Agent](https://raw.githubusercontent.com/prjct-app/pi-usage/main/docs/cover-v2.png)](https://pi.dev)
 
 How many tokens you used, and the **subsidy**: what that same use would cost at API list price. Covers this session, this project and every project. `/usage` opens the shared docked panel.
 

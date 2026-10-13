@@ -183,21 +183,22 @@ function wanted(head: string, file: FileUsage): boolean {
 
 /** Reads complete lines from `start`; a trailing line still being written is left for next time. */
 async function readLines(path: string, start: number, onLine: (line: Buffer) => void): Promise<number> {
-  let offset = start;
-  let pending: Buffer[] = [];
+  const cursor = { offset: start, pending: [] as Buffer[] };
   for await (const chunk of createReadStream(path, { start, highWaterMark: 1 << 20 }) as AsyncIterable<Buffer>) {
-    let from = 0;
-    for (let nl = chunk.indexOf(10, from); nl >= 0; nl = chunk.indexOf(10, from)) {
-      const piece = chunk.subarray(from, nl);
-      const line = pending.length ? Buffer.concat([...pending, piece]) : piece;
-      pending = [];
-      offset += line.length + 1;
-      from = nl + 1;
+    const from = { at: 0 };
+    const cut = { nl: chunk.indexOf(10, from.at) };
+    while (cut.nl >= 0) {
+      const piece = chunk.subarray(from.at, cut.nl);
+      const line = cursor.pending.length ? Buffer.concat([...cursor.pending, piece]) : piece;
+      cursor.pending = [];
+      cursor.offset += line.length + 1;
+      from.at = cut.nl + 1;
       if (line.length) onLine(line);
+      cut.nl = chunk.indexOf(10, from.at);
     }
-    if (from < chunk.length) pending.push(chunk.subarray(from));
+    if (from.at < chunk.length) cursor.pending.push(chunk.subarray(from.at));
   }
-  return offset;
+  return cursor.offset;
 }
 
 async function readHead(path: string): Promise<string> {

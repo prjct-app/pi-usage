@@ -70,11 +70,11 @@ export const isFree = (provider: string, model: string): boolean =>
 
 /** List price of tokens at a catalog rate; cache tokens without a listed rate stay unpriced. */
 export function estimate(tokens: Tokens, rate: Rate): { usd: number; unpriced: number } {
-  let usd = tokens.input * rate.input + tokens.output * rate.output;
-  let unpriced = 0;
-  if (tokens.cacheRead) rate.cacheRead !== undefined ? usd += tokens.cacheRead * rate.cacheRead : unpriced += tokens.cacheRead;
-  if (tokens.cacheWrite) rate.cacheWrite !== undefined ? usd += tokens.cacheWrite * rate.cacheWrite : unpriced += tokens.cacheWrite;
-  return { usd, unpriced };
+  const cacheRead = tokens.cacheRead && rate.cacheRead !== undefined ? tokens.cacheRead * rate.cacheRead : 0;
+  const cacheWrite = tokens.cacheWrite && rate.cacheWrite !== undefined ? tokens.cacheWrite * rate.cacheWrite : 0;
+  const unpriced = (tokens.cacheRead && rate.cacheRead === undefined ? tokens.cacheRead : 0)
+    + (tokens.cacheWrite && rate.cacheWrite === undefined ? tokens.cacheWrite : 0);
+  return { usd: tokens.input * rate.input + tokens.output * rate.output + cacheRead + cacheWrite, unpriced };
 }
 
 type Fetch = (url: string) => Promise<unknown>;
@@ -101,14 +101,19 @@ export class Pricing {
     return this.loading;
   }
 
+  private async readDisk(): Promise<boolean> {
+    const disk = await readFile(this.file, 'utf8').then(text => JSON.parse(text) as Catalog).catch(() => undefined);
+    if (!disk?.rates?.length) return false;
+    this.rates = disk.rates;
+    this.fetchedAt = disk.fetchedAt;
+    return true;
+  }
+
   private async fill(force: boolean): Promise<boolean> {
     if (this.fresh && !force) return false;
-    let changed = false;
-    if (!this.rates.length) {
-      const disk = await readFile(this.file, 'utf8').then(text => JSON.parse(text) as Catalog).catch(() => undefined);
-      if (disk?.rates?.length) { this.rates = disk.rates; this.fetchedAt = disk.fetchedAt; changed = true; }
-      if (this.fresh && !force) return changed;
-    }
+    const fromDisk = this.rates.length ? false : await this.readDisk();
+    const changed = fromDisk;
+    if (this.fresh && !force) return changed;
     try {
       const rates = parseCatalog(await this.fetcher(CATALOG_URL));
       if (!rates.length) return changed;

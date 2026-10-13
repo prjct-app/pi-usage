@@ -126,8 +126,8 @@ export default function piUsage(pi: ExtensionAPI): void {
     const trees = state.mains.map(tree).filter(t => tokenSum(t.summary.total.tokens) > 0 || t.file.prompt || t.file.name)
       .sort((a, b) => (b.file.lastAt ?? 0) - (a.file.lastAt ?? 0));
     const project = { trees, summary: summarize(mains, [...owners.values()].flat(), rates) };
-    let global: View['global'];
-    if (state.globalMains && state.globalChildren) {
+    const global = (() => {
+      if (!state.globalMains || !state.globalChildren) return undefined;
       const all = [live, ...state.globalMains];
       const globalOwners = ownersOf(all, state.globalChildren, where.stateRoot);
       const projects = new Map<string, { cwd: string; usd: number; sessions: number }>();
@@ -138,13 +138,13 @@ export default function piUsage(pi: ExtensionAPI): void {
         entry.sessions += 1;
         entry.usd += subsidyOf(summarize([file], globalOwners.get(file.path) ?? [], rates).total);
       }
-      global = {
+      return {
         summary: summarize(all, state.globalChildren, rates),
         mains: all.length,
         children: state.globalChildren.length,
         projects: [...projects.values()].sort((a, b) => b.usd - a.usd),
       };
-    }
+    })();
     state.view = { session, project, global };
   };
 
@@ -201,14 +201,13 @@ export default function piUsage(pi: ExtensionAPI): void {
     const globalMains: FileUsage[] = [];
     const globalChildren: FileUsage[] = [];
     const total = globalPaths.length + childPaths.length;
-    let done = 0;
-    let shown = Date.now();
+    const reading = { done: 0, shown: Date.now() };
     for (const [paths, into] of [[globalPaths, globalMains], [childPaths, globalChildren]] as const) {
       for (const path of paths) {
         const file = await scanner.scan(path);
         if (file) into.push(file);
-        done += 1;
-        if (Date.now() - shown > 250) { shown = Date.now(); progress(`reading all projects ${done}/${total}…`); }
+        reading.done += 1;
+        if (Date.now() - reading.shown > 250) { reading.shown = Date.now(); progress(`reading all projects ${reading.done}/${total}…`); }
       }
     }
     scanner.prune(where.sessionsRoot, new Set([...globalPaths, ...(where.currentFile ? [where.currentFile] : [])]));

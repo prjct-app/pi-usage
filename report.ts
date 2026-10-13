@@ -42,9 +42,16 @@ const SUBAGENTS = 'subagent calls';
 const kindLabel = (row: Row, child: boolean): string => (child ? SUBAGENTS : KIND_LABELS[row.kind] ?? row.kind.replace(/_/g, ' '));
 
 const rateCache = new WeakMap<readonly Rate[], Map<string, Rate | undefined>>();
+/** Walks up parent folders until a main session file is reached; gives up after 16 levels. */
+function climbToMain(start: FileUsage, mainPaths: Set<string>, parentOf: (child: FileUsage) => FileUsage | undefined): FileUsage | undefined {
+  const walk = (node: FileUsage | undefined, depth: number): FileUsage | undefined =>
+    node && !mainPaths.has(node.path) && depth < 16 ? walk(parentOf(node), depth + 1) : node;
+  return walk(start, 0);
+}
+
 function cachedRate(rates: readonly Rate[], provider: string, model: string): Rate | undefined {
-  let cache = rateCache.get(rates);
-  if (!cache) rateCache.set(rates, cache = new Map());
+  const cache = rateCache.get(rates) ?? new Map<string, Rate | undefined>();
+  rateCache.set(rates, cache);
   const key = `${provider}\u0001${model}`;
   if (!cache.has(key)) cache.set(key, rateFor(rates, provider, model));
   return cache.get(key);
@@ -111,8 +118,7 @@ export function ownersOf(mains: readonly FileUsage[], children: readonly FileUsa
   const mainPaths = new Set(mains.map(file => file.path));
   const owners = new Map<string, FileUsage[]>();
   for (const child of children) {
-    let node: FileUsage | undefined = child;
-    for (let depth = 0; node && !mainPaths.has(node.path) && depth < 16; depth++) node = parentOf(node);
+    const node = climbToMain(child, mainPaths, parentOf);
     if (!node || !mainPaths.has(node.path)) continue;
     const list = owners.get(node.path) ?? [];
     owners.set(node.path, list);

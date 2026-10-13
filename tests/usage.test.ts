@@ -142,12 +142,12 @@ test('list price: Pi first, catalog for $0 tokens, free stays free, unknown stay
 test('the catalog is cached on disk and a failed fetch keeps the last good one', async () => {
   const file = join(dir(), 'pricing.json');
   const payload = { data: [{ id: 'a/model-x', pricing: { prompt: '0.000001', completion: '0.000002' } }] };
-  let now = 1_000;
-  const good = new Pricing(file, async () => payload, () => now);
+  const now = { value: 1_000 };
+  const good = new Pricing(file, async () => payload, () => now.value);
   assert.equal(await good.load(), true);
   assert.equal(good.rates.length, 1);
-  now += 2 * 24 * 60 * 60 * 1000;
-  const offline = new Pricing(file, async () => { throw new Error('offline'); }, () => now);
+  now.value += 2 * 24 * 60 * 60 * 1000;
+  const offline = new Pricing(file, async () => { throw new Error('offline'); }, () => now.value);
   await offline.load();
   assert.equal(offline.rates[0]?.id, 'a/model-x');
 });
@@ -227,8 +227,8 @@ test('the line above the editor shows the session, then the project once read, a
     hasUI: true, mode: 'tui', cwd: '/work/app',
     ui: { theme: { fg: (_tone: string, text: string) => text }, setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), setWidget() {}, notify() {} },
     sessionManager: {
-      getSessionDir: () => projectDir, getSessionFile: () => join(projectDir, 'now.jsonl'), getSessionId: () => 'now',
-      getHeader: () => header('now', 5), getEntries: () => entries,
+      getSessionDir: () => projectDir, getSessionFile: () => join(projectDir, 'now.value.jsonl'), getSessionId: () => 'now.value',
+      getHeader: () => header('now.value', 5), getEntries: () => entries,
     },
   };
   const { pi, events } = recordingPi();
@@ -257,15 +257,15 @@ test('/usage without a TUI reports session, project and every project as text', 
   const childPath = join(childDir(join(root, 'prjct', 'subagents', 'state'), 'old'), 'j_1');
   mkdirSync(childPath, { recursive: true });
   writeFileSync(join(childPath, 'c.jsonl'), jsonl([{ ...header('kid'), cwd: '/tmp' }, reply(3, 'gpt-6-luna', usage(10, 1, 0.5))]));
-  const current = join(projectDir, 'now.jsonl');
+  const current = join(projectDir, 'now.value.jsonl');
   const entries = [user(5, 'hello'), reply(6, 'gpt-6-sol', usage(10, 1, 1))];
   const notes: string[] = [];
   const ctx = {
     hasUI: false, mode: 'print', cwd: '/work/app',
     ui: { notify: (text: string) => notes.push(text) },
     sessionManager: {
-      getSessionDir: () => projectDir, getSessionFile: () => current, getSessionId: () => 'now',
-      getHeader: () => header('now', 5), getEntries: () => entries,
+      getSessionDir: () => projectDir, getSessionFile: () => current, getSessionId: () => 'now.value',
+      getHeader: () => header('now.value', 5), getEntries: () => entries,
     },
   };
   const { pi, commands } = recordingPi();
@@ -297,8 +297,8 @@ test('/usage off hides the line in every session until /usage on', async () => {
     hasUI: true, mode: 'tui', cwd: '/work/app',
     ui: { theme: { fg: (_tone: string, text: string) => text }, setStatus: (key: string, text: string | undefined) => statuses.push([key, text]), setWidget() {}, notify: (text: string) => notes.push(text) },
     sessionManager: {
-      getSessionDir: () => projectDir, getSessionFile: () => join(projectDir, 'now.jsonl'), getSessionId: () => 'now',
-      getHeader: () => header('now', 5), getEntries: () => [reply(6, 'gpt-6-sol', usage(10, 1, 1))],
+      getSessionDir: () => projectDir, getSessionFile: () => join(projectDir, 'now.value.jsonl'), getSessionId: () => 'now.value',
+      getHeader: () => header('now.value', 5), getEntries: () => [reply(6, 'gpt-6-sol', usage(10, 1, 1))],
     },
   };
   const line = () => statuses.filter(([key]) => key === 'fact:usage').at(-1)?.[1];

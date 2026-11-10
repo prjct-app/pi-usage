@@ -75,22 +75,26 @@ export default function piUsage(pi: ExtensionAPI): void {
   const settingsFile = join(home, 'pi-usage', 'settings.json');
   const settings = readSettings(settingsFile);
   const listeners = new Set<() => void>();
-  const state: {
+  /** Everything pi-usage knows, as one immutable value; every change replaces it. */
+  type State = Readonly<{
     where?: Where;
     live?: FileUsage;
-    mains: FileUsage[];
-    children: FileUsage[];
-    globalMains?: FileUsage[];
-    globalChildren?: FileUsage[];
+    mains: readonly FileUsage[];
+    children: readonly FileUsage[];
+    globalMains?: readonly FileUsage[];
+    globalChildren?: readonly FileUsage[];
     view?: View;
     scanning?: string;
-    running?: Promise<void>;
     /** The context the line above the editor belongs to. */
     lineCtx?: ExtensionContext;
     projectRead: boolean;
     projectAt: number;
-    timer?: ReturnType<typeof setTimeout>;
-  } = { mains: [], children: [], projectRead: false, projectAt: 0 };
+  }>;
+  // The one cell that changes: it holds the current state value, which is always replaced, never edited.
+  const data: { value: State } = { value: { mains: [], children: [], projectRead: false, projectAt: 0 } };
+  const update = (change: Partial<State>): void => { data.value = { ...data.value, ...change }; };
+  /** Handles (setTimeout, in-flight promises) are not application data; they live in their own cell. */
+  const handles: { running?: Promise<void>; timer?: ReturnType<typeof setTimeout> } = {};
 
   const changed = (): void => { for (const listener of listeners) listener(); };
 
@@ -112,24 +116,24 @@ export default function piUsage(pi: ExtensionAPI): void {
   };
 
   const rebuild = (): void => {
-    const where = state.where;
-    const live = state.live;
+    const where = data.value.where;
+    const live = data.value.live;
     if (!where || !live) return;
     const rates = pricing.rates;
-    const mains = [live, ...state.mains];
-    const owners = ownersOf(mains, state.children, where.stateRoot);
+    const mains = [live, ...data.value.mains];
+    const owners = ownersOf(mains, data.value.children, where.stateRoot);
     const tree = (file: FileUsage): Tree => {
       const children = owners.get(file.path) ?? [];
       return { file, children, summary: summarize([file], children, rates) };
     };
     const session = tree(live);
-    const trees = state.mains.map(tree).filter(t => tokenSum(t.summary.total.tokens) > 0 || t.file.prompt || t.file.name)
+    const trees = data.value.mains.map(tree).filter(t => tokenSum(t.summary.total.tokens) > 0 || t.file.prompt || t.file.name)
       .sort((a, b) => (b.file.lastAt ?? 0) - (a.file.lastAt ?? 0));
     const project = { trees, summary: summarize(mains, [...owners.values()].flat(), rates) };
     const global = (() => {
-      if (!state.globalMains || !state.globalChildren) return undefined;
-      const all = [live, ...state.globalMains];
-      const globalOwners = ownersOf(all, state.globalChildren, where.stateRoot);
+      if (!data.value.globalMains || !data.value.globalChildren) return undefined;
+      const all = [live, ...data.value.globalMains];
+      const globalOwners = ownersOf(all, data.value.globalChildren, where.stateRoot);
       const projects = new Map<string, { cwd: string; usd: number; sessions: number }>();
       for (const file of all) {
         const cwd = file.cwd ?? '(unknown folder)';
@@ -139,26 +143,26 @@ export default function piUsage(pi: ExtensionAPI): void {
         entry.usd += subsidyOf(summarize([file], globalOwners.get(file.path) ?? [], rates).total);
       }
       return {
-        summary: summarize(all, state.globalChildren, rates),
+        summary: summarize(all, data.value.globalChildren, rates),
         mains: all.length,
-        children: state.globalChildren.length,
+        children: data.value.globalChildren.length,
         projects: [...projects.values()].sort((a, b) => b.usd - a.usd),
       };
     })();
-    state.view = { session, project, global };
+        update({ view: { session, project, global } });
   };
 
   /** "$0.05 session · $277.74 project" on the line above the editor. UI only: the model never sees it. */
   const showLine = (): void => {
-    const ctx = state.lineCtx;
-    const view = state.view;
+    const ctx = data.value.lineCtx;
+    const view = data.value.view;
     if (!ctx || !view) return;
     if (!settings.line) { setFact(ctx, 'usage', undefined); return; }
     const session = `${usd(subsidyOf(view.session.summary.total))} session`;
-    setFact(ctx, 'usage', state.projectRead ? `${session} · ${usd(subsidyOf(view.project.summary.total))} project` : session);
+    setFact(ctx, 'usage', data.value.projectRead ? `${session} · ${usd(subsidyOf(view.project.summary.total))} project` : session);
   };
 
-  const progress = (text: string | undefined): void => { state.scanning = text; rebuild(); changed(); showLine(); };
+  const progress = (text: string | undefined): void => {  update({ scanning: text }); rebuild(); changed(); showLine(); };
 
   /** This folder's other sessions and every subagent run they or this session launched. */
   const scanProject = async (where: Where): Promise<void> => {
@@ -169,7 +173,7 @@ export default function piUsage(pi: ExtensionAPI): void {
     scanner.prune(where.projectDir, new Set(projectPaths));
     // Subagent runs, launched by these sessions or by their own subagents.
     const children: FileUsage[] = [];
-    const queue = [state.live?.id, ...mains.map(file => file.id)].filter((id): id is string => !!id);
+    const queue = [data.value.live?.id, ...mains.map(file => file.id)].filter((id): id is string => !!id);
     const seen = new Set<string>();
     while (queue.length) {
       const id = queue.shift()!;
@@ -182,15 +186,15 @@ export default function piUsage(pi: ExtensionAPI): void {
         if (file.id) queue.push(file.id);
       }
     }
-    state.mains = mains;
-    state.children = children;
-    state.projectRead = true;
-    state.projectAt = Date.now();
+        update({ mains: mains });
+        update({ children: children });
+        update({ projectRead: true });
+        update({ projectAt: Date.now() });
   };
 
   /** Reads what changed: this folder and its subagent runs first, then every project, then prices. */
   const collect = async (force: boolean): Promise<void> => {
-    const where = state.where!;
+    const where = data.value.where!;
     progress('reading this project…');
     await scanProject(where);
     progress('reading all projects…');
@@ -213,11 +217,11 @@ export default function piUsage(pi: ExtensionAPI): void {
     scanner.prune(where.sessionsRoot, new Set([...globalPaths, ...(where.currentFile ? [where.currentFile] : [])]));
     scanner.prune(where.stateRoot, new Set(childPaths));
     await scanner.save().catch(() => undefined);
-    state.globalMains = globalMains;
-    state.globalChildren = globalChildren;
+        update({ globalMains: globalMains });
+        update({ globalChildren: globalChildren });
 
     // Prices only matter when some tokens were recorded at $0.
-    const needsPrices = [state.live!, ...globalMains, ...globalChildren].some(file =>
+    const needsPrices = [data.value.live!, ...globalMains, ...globalChildren].some(file =>
       Object.values(file.rows).some(row => tokenSum(row.zero) > 0 && !isFree(row.provider, row.model)));
     if (needsPrices && (force || !pricing.fresh)) {
       progress('fetching list prices…');
@@ -227,24 +231,24 @@ export default function piUsage(pi: ExtensionAPI): void {
   };
 
   const refresh = (ctx: ExtensionContext, force = false): Promise<void> => {
-    state.where = locate(ctx);
-    state.live = liveFile(ctx);
+        update({ where: locate(ctx) });
+        update({ live: liveFile(ctx) });
     rebuild();
-    state.running ??= collect(force)
+    handles.running ??= collect(force)
       .catch(error => progress(`could not read everything: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(() => { state.running = undefined; });
-    return state.running;
+      .finally(() => { handles.running = undefined; });
+    return handles.running;
   };
 
   const scopeMeta = (summary: Summary | undefined): string =>
-    summary ? `${usd(subsidyOf(summary.total))} · ${compact(tokenSum(summary.total.tokens))} tok` : state.scanning ?? 'reading…';
+    summary ? `${usd(subsidyOf(summary.total))} · ${compact(tokenSum(summary.total.tokens))} tok` : data.value.scanning ?? 'reading…';
 
   const items = (): PanelItem[] => {
-    const view = state.view;
+    const view = data.value.view;
     if (!view) return [];
     const rows: PanelItem[] = [
       { id: 'session', label: 'This session', symbol: SYMBOL.active, tone: 'success', meta: scopeMeta(view.session.summary) },
-      { id: 'project', label: 'Project', meta: `${scopeMeta(view.project.summary)} · ${plural(view.project.trees.length + 1, 'session')}`, search: state.where?.cwd },
+      { id: 'project', label: 'Project', meta: `${scopeMeta(view.project.summary)} · ${plural(view.project.trees.length + 1, 'session')}`, search: data.value.where?.cwd },
       { id: 'global', label: 'All projects', meta: scopeMeta(view.global?.summary) },
     ];
     for (const tree of view.project.trees) {
@@ -268,9 +272,9 @@ export default function piUsage(pi: ExtensionAPI): void {
   const modelSection = (summary: Summary) => ({ title: 'By model · subsidy', lines: summary.models.length ? modelLines(summary.models) : ['No calls yet.'] });
 
   const detail = (item: PanelItem): PanelDetail => {
-    const view = state.view;
+    const view = data.value.view;
     if (!view) return { title: item.label };
-    const subtitle = state.scanning;
+    const subtitle = data.value.scanning;
     if (item.id === 'session') {
       const { file, children, summary } = view.session;
       return {
@@ -290,11 +294,11 @@ export default function piUsage(pi: ExtensionAPI): void {
       const runs = trees.reduce((sum, tree) => sum + tree.children.length, view.session.children.length);
       return {
         title: 'Project',
-        subtitle: subtitle ?? state.where?.cwd,
+        subtitle: subtitle ?? data.value.where?.cwd,
         fields: [
           ...scopeFields(summary),
           { label: 'sessions', value: `${plural(trees.length + 1, 'session')} · ${plural(runs, 'subagent run')}` },
-          { label: 'folder', value: state.where?.cwd ?? '—' },
+          { label: 'folder', value: data.value.where?.cwd ?? '—' },
         ],
         sections: [
           modelSection(summary),
@@ -341,11 +345,11 @@ export default function piUsage(pi: ExtensionAPI): void {
   const spec = (ctx: ExtensionContext, initial: Scope): PanelSpec => ({
     title: 'Usage',
     summary: () => {
-      const view = state.view;
+      const view = data.value.view;
       if (!view) return '';
       const parts = [`session ${usd(subsidyOf(view.session.summary.total))}`, `project ${usd(subsidyOf(view.project.summary.total))}`];
       parts.push(view.global ? `all ${usd(subsidyOf(view.global.summary.total))}` : 'all …');
-      if (state.scanning) parts.push(state.scanning);
+      if (data.value.scanning) parts.push(data.value.scanning);
       return parts.join(' · ');
     },
     items,
@@ -362,30 +366,30 @@ export default function piUsage(pi: ExtensionAPI): void {
   /** Plain text for print and RPC modes: the scopes, then every model across projects. */
   const text = (ctx: ExtensionContext): string => {
     const lines = [panelText(spec(ctx, 'session'))];
-    const summary = state.view?.global?.summary ?? state.view?.project.summary;
-    if (summary) lines.push('', `By model (${state.view?.global ? 'all projects' : 'this project'}) · subsidy`, ...modelLines(summary.models));
+    const summary = data.value.view?.global?.summary ?? data.value.view?.project.summary;
+    if (summary) lines.push('', `By model (${data.value.view?.global ? 'all projects' : 'this project'}) · subsidy`, ...modelLines(summary.models));
     return lines.join('\n');
   };
 
   /** Re-reads this folder in the background, at most every 30s: ages and other terminals' sessions move. */
   const readProject = (delayMs: number): void => {
-    if (!settings.line || state.timer || state.running || Date.now() - state.projectAt < 30_000) return;
-    state.timer = setTimeout(() => {
-      state.timer = undefined;
-      const where = state.where;
-      if (!where || state.running) return;
+    if (!settings.line || handles.timer || handles.running || Date.now() - data.value.projectAt < 30_000) return;
+    handles.timer = setTimeout(() => {
+      handles.timer = undefined;
+      const where = data.value.where;
+      if (!where || handles.running) return;
       void scanProject(where).then(() => scanner.save()).catch(() => undefined).then(() => { rebuild(); changed(); showLine(); });
     }, delayMs);
-    state.timer.unref?.();
+    handles.timer.unref?.();
   };
 
   // Passive from here on: these handlers return nothing, so no message, prompt or tool changes.
   pi.on('session_start', (_event, ctx) => {
-    state.lineCtx = ctx;
-    state.where = locate(ctx);
-    state.live = liveFile(ctx);
-    state.projectRead = false;
-    state.projectAt = 0;
+        update({ lineCtx: ctx });
+        update({ where: locate(ctx) });
+        update({ live: liveFile(ctx) });
+        update({ projectRead: false });
+        update({ projectAt: 0 });
     rebuild();
     showLine();
     // After startup settles, so opening Pi never waits on it.
@@ -394,9 +398,9 @@ export default function piUsage(pi: ExtensionAPI): void {
 
   // Each reply adds its cost to the line right away.
   pi.on('message_end', (event, ctx) => {
-    if (!state.live || !state.where || event.message?.role !== 'assistant' || !(event.message as { usage?: unknown }).usage) return;
-    absorb(state.live, { type: 'message', timestamp: new Date().toISOString(), message: event.message });
-    if (!state.lineCtx) state.lineCtx = ctx;
+    if (!data.value.live || !data.value.where || event.message?.role !== 'assistant' || !(event.message as { usage?: unknown }).usage) return;
+    absorb(data.value.live, { type: 'message', timestamp: new Date().toISOString(), message: event.message });
+    if (!data.value.lineCtx)  update({ lineCtx: ctx });
     rebuild();
     changed();
     showLine();
@@ -404,8 +408,8 @@ export default function piUsage(pi: ExtensionAPI): void {
 
   // A finished run: re-read this session whole (cache warms, compactions) and, now and then, the folder.
   pi.on('agent_end', (_event, ctx) => {
-    if (!state.where) return;
-    state.live = liveFile(ctx);
+    if (!data.value.where) return;
+        update({ live: liveFile(ctx) });
     rebuild();
     changed();
     showLine();
@@ -413,10 +417,10 @@ export default function piUsage(pi: ExtensionAPI): void {
   });
 
   pi.on('session_shutdown', () => {
-    if (state.timer) clearTimeout(state.timer);
-    state.timer = undefined;
-    if (state.lineCtx) setFact(state.lineCtx, 'usage', undefined);
-    state.lineCtx = undefined;
+    if (handles.timer) clearTimeout(handles.timer);
+    handles.timer = undefined;
+    if (data.value.lineCtx) setFact(data.value.lineCtx, 'usage', undefined);
+        update({ lineCtx: undefined });
   });
 
   pi.registerCommand('usage', {
@@ -427,10 +431,10 @@ export default function piUsage(pi: ExtensionAPI): void {
       if (word === 'on' || word === 'off') {
         settings.line = word === 'on';
         try { writeSettings(settingsFile, settings); } catch { /* the choice still holds for this session */ }
-        state.lineCtx ??= ctx;
+        if (!data.value.lineCtx) update({ lineCtx: ctx });
         if (settings.line) {
-          if (!state.where) { state.where = locate(ctx); state.live = liveFile(ctx); rebuild(); }
-          state.projectAt = 0;
+          if (!data.value.where) {  update({ where: locate(ctx) });  update({ live: liveFile(ctx) }); rebuild(); }
+                    update({ projectAt: 0 });
           readProject(0);
         }
         showLine();
